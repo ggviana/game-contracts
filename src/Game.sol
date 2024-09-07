@@ -2,6 +2,7 @@
 pragma solidity 0.8.27;
 
 import "../lib/openzeppelin-contracts/contracts/token/ERC20/ERC20.sol";
+import "./GamePositions.sol";
 
 contract Game {
     struct PlayerBet {
