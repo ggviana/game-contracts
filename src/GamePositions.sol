@@ -10,29 +10,29 @@ contract GamePositions is ERC1155 {
         game = msg.sender; // The game contract becomes the minter
     }
 
-    function getTokenId(string memory id) public pure returns (uint) {
-        return uint(keccak256(abi.encodePacked(id))); // Generate unique ID based on string
+    function getTokenId(string memory option) public pure returns (uint) {
+        return uint(keccak256(abi.encodePacked(option)));
     }
 
     // Only the Game contract can mint tokens
     function mint(
         address to,
-        string memory id,
+        string memory option,
         uint256 amount
     ) external {
         require(msg.sender == game, "Only game can mint");
-        uint tokenId = uint(keccak256(abi.encodePacked(id))); // Generate unique ID based on string
+        uint tokenId = getTokenId(option);
         _mint(to, tokenId, amount, "");
     }
 
     // Only the Game contract can burn tokens
     function burn(
         address from,
-        string memory id,
+        string memory option,
         uint256 amount
     ) external {
         require(msg.sender == game, "Only game can burn");
-        uint tokenId = uint(keccak256(abi.encodePacked(id))); // Generate unique ID based on string
+        uint tokenId = getTokenId(option);
         _burn(from, tokenId, amount);
     }
 }
