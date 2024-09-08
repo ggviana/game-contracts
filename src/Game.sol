@@ -22,7 +22,7 @@ contract Game {
     GameStatus public status;
     mapping(address => PlayerBet) public playerBets;
     mapping(address => bool) public hasClaimedReward;
-    GamePositions public positionTokenContract;
+    GamePositions public positions;
     string[] public options; // List of option names (e.g., ["yes", "no"])
 
     event OptionPicked(address indexed player, string optionName, uint amount);
@@ -43,7 +43,7 @@ contract Game {
         string[] memory optionNames
     ) {
         // Deploy the ERC1155 token contract for position tokens
-        positionTokenContract = new GamePositionToken1155();
+        positions = new GamePositions();
 
         // Initialize the game status
         status.resolver = resolver;
@@ -67,7 +67,7 @@ contract Game {
         status.token.transferFrom(msg.sender, address(this), amount);
 
         // Mint ERC1155 position tokens (for the selected option) to the player
-        positionTokenContract.mint(msg.sender, optionName, amount);
+        positions.mint(msg.sender, optionName, amount);
 
         // Update the player's bet and the total staked for the selected option
         playerBets[msg.sender] = PlayerBet(optionName, amount);
@@ -89,7 +89,7 @@ contract Game {
         // Burn losing tokens for all players
         for (uint i = 0; i < options.length; i++) {
             if (keccak256(bytes(options[i])) != keccak256(bytes(winningOption))) {
-                positionTokenContract.burn(address(this), options[i], status.optionTotalStakes[options[i]]);
+                positions.burn(address(this), options[i], status.optionTotalStakes[options[i]]);
             }
         }
 

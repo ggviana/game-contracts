@@ -10,6 +10,10 @@ contract GamePositions is ERC1155 {
         game = msg.sender; // The game contract becomes the minter
     }
 
+    function getTokenId(string memory id) public pure returns (uint) {
+        return uint(keccak256(abi.encodePacked(id))); // Generate unique ID based on string
+    }
+
     // Only the Game contract can mint tokens
     function mint(
         address to,
