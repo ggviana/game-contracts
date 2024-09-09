@@ -30,6 +30,13 @@ contract OrderBook {
     event OrderFilled(uint orderId, address indexed fulfiller, uint amountFilled, uint remainingQuantity, bool fullyFilled);
     event OrderCancelled(uint orderId, address indexed creator);
 
+    error InsufficientTokenBalance();
+    error OrderAlreadyFilled();
+    error InvalidFillAmount();
+    error InsufficientBalanceToBuy();
+    error OnlyCreatorCanCancel();
+    error OrderCannotBeFilled();
+
     constructor(ERC20 _money, UserBets _positions) {
         money = _money;
         bets = _positions;
@@ -44,7 +51,9 @@ contract OrderBook {
     // Place a sell order
     function placeSellOrder(bytes32 option, uint price, uint quantity) external {
         uint tokenId = bets.getTokenId(option);
-        require(bets.balanceOf(msg.sender, tokenId) >= quantity, "Insufficient token balance");
+        if (bets.balanceOf(msg.sender, tokenId) < quantity) {
+            revert InsufficientTokenBalance();
+        }
 
         uint orderId = _createOrder(OrderType.Sell, option, price, quantity);
         emit OrderPlaced(orderId, msg.sender, OrderType.Sell, option, price, quantity);
@@ -53,14 +62,20 @@ contract OrderBook {
     // Fill an existing order with partial matching
     function fillOrder(uint orderId, uint amountToFill) external {
         Order storage order = orders[orderId];
-        require(!order.isFilled, "Order is already filled");
-        require(amountToFill > 0 && amountToFill <= order.remainingQuantity, "Invalid amount to fill");
+        if (order.isFilled) {
+            revert OrderAlreadyFilled();
+        }
+        if (amountToFill == 0 || amountToFill > order.remainingQuantity) {
+            revert InvalidFillAmount();
+        }
 
         uint totalCost = order.price * amountToFill;
 
         if (order.orderType == OrderType.Sell) {
             // Fulfill a sell order
-            require(money.balanceOf(msg.sender) >= totalCost, "Insufficient balance to buy");
+            if (money.balanceOf(msg.sender) < totalCost) {
+                revert InsufficientBalanceToBuy();
+            }
             money.transferFrom(msg.sender, order.creator, totalCost);
 
             uint tokenId = bets.getTokenId(order.option);
@@ -68,7 +83,9 @@ contract OrderBook {
         } else if (order.orderType == OrderType.Buy) {
             // Fulfill a buy order
             uint tokenId = bets.getTokenId(order.option);
-            require(bets.balanceOf(msg.sender, tokenId) >= amountToFill, "Insufficient token balance");
+            if (bets.balanceOf(msg.sender, tokenId) < amountToFill) {
+                revert InsufficientTokenBalance();
+            }
             bets.safeTransferFrom(msg.sender, order.creator, tokenId, amountToFill, "");
 
             money.transferFrom(order.creator, msg.sender, totalCost);
@@ -86,8 +103,12 @@ contract OrderBook {
     // Cancel an existing order and return tokens
     function cancelOrder(uint orderId) external {
         Order storage order = orders[orderId];
-        require(order.creator == msg.sender, "Only creator can cancel this order");
-        require(!order.isFilled, "Order is already filled");
+        if (order.creator != msg.sender) {
+            revert OnlyCreatorCanCancel();
+        }
+        if (order.isFilled) {
+            revert OrderAlreadyFilled();
+        }
 
         if (order.orderType == OrderType.Sell) {
             // Return the remaining GamePositionToken1155 tokens to the creator
