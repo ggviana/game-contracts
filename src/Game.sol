@@ -2,118 +2,109 @@
 pragma solidity 0.8.27;
 
 import "../lib/openzeppelin-contracts/contracts/token/ERC20/ERC20.sol";
-import "./GamePositions.sol";
+import "../lib/openzeppelin-contracts/contracts/utils/math/Math.sol";
+import "./UserBets.sol";
 
 contract Game {
-    struct PlayerBet {
-        string optionName; // String option name
-        uint amount;
-    }
+    using Math for uint256;
 
     struct GameStatus {
         address resolver;
-        ERC20 token;
+        ERC20 reward;
         uint40 expectedEnd;
         bool resolved;
-        string winningOption;
-        mapping(string => uint) optionTotalStakes; // Total stake for each option (by string)
+        bytes32 winningOption;
     }
 
     GameStatus public status;
-    mapping(address => PlayerBet) public playerBets;
-    mapping(address => bool) public hasClaimedReward;
-    GamePositions public positions;
-    string[] public options; // List of option names (e.g., ["yes", "no"])
+    UserBets public bets;
+    bytes32[] private _options;
 
-    event OptionPicked(address indexed player, string optionName, uint amount);
-    event GameResolved(string winningOption);
+    event OptionPicked(address indexed player, bytes32 option, uint amount);
+    event GameResolved(bytes32 winningOption);
     event RewardClaimed(address indexed player, uint amount);
 
-    error GameOptionDontExist();
-    error GameAlreadyResolved();
-    error InvalidOption();
-    error NoBetPlaced();
-    error RewardAlreadyClaimed();
-    error GameNotFinished();
+    error AlreadyResolved();
+    error InvalidOption(bytes32 option);
+    error NoReward();
+    error AlreadyFinished();
+    error NotFinished();
+    error NotResolver();
 
     constructor(
         address resolver,
         ERC20 token,
         uint40 expectedEnd,
-        string[] memory optionNames
+        bytes32[] memory optionNames
     ) {
         // Deploy the ERC1155 token contract for position tokens
-        positions = new GamePositions();
+        bets = new UserBets();
 
         // Initialize the game status
         status.resolver = resolver;
-        status.token = token;
+        status.reward = token;
         status.expectedEnd = expectedEnd;
         status.resolved = false;
 
-        // Set up options based on the provided array of strings
-        for (uint i = 0; i < optionNames.length; i++) {
-            options.push(optionNames[i]); // Store the option name
-            status.optionTotalStakes[optionNames[i]] = 0; // Initialize total stakes for this option to 0
+        _options = optionNames;
+    }
+
+    function addLiquidity(uint amount) public {
+        if (block.timestamp > status.expectedEnd) revert AlreadyFinished(); // Prevent betting after the game ends
+
+        // Transfer the ERC20 tokens from the player to the game contract
+        status.reward.transferFrom(msg.sender, address(this), amount);
+
+        uint optionCount = _options.length;
+        uint mintEach = amount / optionCount;
+
+        for(uint8 i = 0; i < optionCount; i++) {
+            bets.mint(msg.sender, _options[i], mintEach);
+            emit OptionPicked(msg.sender, _options[i], amount);
         }
     }
 
     // Function for players to pick an option and stake tokens
-    function pickOption(string memory optionName, uint amount) external {
-        if (bytes(optionName).length == 0 || status.optionTotalStakes[optionName] == 0) revert GameOptionDontExist();
-        if (block.timestamp > status.expectedEnd) revert GameNotFinished(); // Prevent betting after the game ends
+    function pickOption(bytes32 option, uint amount) external {
+        if (!_hasOption(option)) revert InvalidOption(option);
+        if (block.timestamp > status.expectedEnd) revert AlreadyFinished(); // Prevent betting after the game ends
 
         // Transfer the ERC20 tokens from the player to the game contract
-        status.token.transferFrom(msg.sender, address(this), amount);
+        status.reward.transferFrom(msg.sender, address(this), amount);
 
         // Mint ERC1155 position tokens (for the selected option) to the player
-        positions.mint(msg.sender, optionName, amount);
+        bets.mint(msg.sender, option, amount);
 
-        // Update the player's bet and the total staked for the selected option
-        playerBets[msg.sender] = PlayerBet(optionName, amount);
-        status.optionTotalStakes[optionName] += amount;
-
-        emit OptionPicked(msg.sender, optionName, amount);
+        emit OptionPicked(msg.sender, option, amount);
     }
 
     // Function for the resolver to resolve the game by passing the winning option as a string
-    function resolveGame(string memory winningOption) external {
-        if (msg.sender != status.resolver) revert InvalidOption();
-
-        if (status.resolved) revert GameAlreadyResolved();
-        if (bytes(winningOption).length == 0 || status.optionTotalStakes[winningOption] == 0) revert InvalidOption();
+    function resolveGame(bytes32 winningOption) external {
+        if (msg.sender != status.resolver) revert NotResolver();
+        if (status.resolved) revert AlreadyResolved();
+        if (!_hasOption(winningOption)) revert InvalidOption(winningOption);
 
         status.resolved = true;
         status.winningOption = winningOption;
-
-        // Burn losing tokens for all players
-        for (uint i = 0; i < options.length; i++) {
-            if (keccak256(bytes(options[i])) != keccak256(bytes(winningOption))) {
-                positions.burn(address(this), options[i], status.optionTotalStakes[options[i]]);
-            }
-        }
 
         emit GameResolved(winningOption);
     }
 
     // Function for players to claim rewards after the game is resolved
     function claimReward() external {
-        if (!status.resolved) revert GameNotFinished();
-        PlayerBet storage playerBet = playerBets[msg.sender];
-        if (playerBet.amount == 0) revert NoBetPlaced();
-        if (hasClaimedReward[msg.sender]) revert RewardAlreadyClaimed();
-
-        // Check if the player's bet was on the winning option
-        if (keccak256(bytes(playerBet.optionName)) != keccak256(bytes(status.winningOption))) {
-            hasClaimedReward[msg.sender] = true;
-            emit RewardClaimed(msg.sender, 0);
-            return; // Player bet on the wrong option, no reward
-        }
+        if (!status.resolved) revert NotFinished();
+        uint playerBetAmount = bets.balanceOf(msg.sender, status.winningOption);
+        if (playerBetAmount == 0) revert NoReward();
 
         // Calculate the player's reward based on their stake and the total staked in the winning option
-        uint reward = (playerBet.amount * status.token.balanceOf(address(this))) / status.optionTotalStakes[status.winningOption];
-        hasClaimedReward[msg.sender] = true;
-        status.token.transfer(msg.sender, reward);
+        uint prize = totalStaked();
+        uint winningOptionBets = getBetsByOption(status.winningOption);
+        uint reward = playerBetAmount.mulDiv(prize, winningOptionBets, Math.Rounding.Floor);
+
+        // Burns user bets
+        bets.burn(msg.sender, status.winningOption, reward);
+        // Unlocks the rewards
+        status.reward.transfer(msg.sender, reward);
 
         emit RewardClaimed(msg.sender, reward);
     }
@@ -124,12 +115,21 @@ contract Game {
     }
 
     // Helper function to get the total pool of tokens staked in the game
-    function getTotalPool() public view returns (uint) {
-        return status.token.balanceOf(address(this));
+    function totalStaked() public view returns (uint) {
+        return status.reward.balanceOf(address(this));
     }
 
-    // Function to retrieve all option names
-    function getOptionNames() external view returns (string[] memory) {
-        return options;
+    function getBetsByOption(bytes32 option) public view returns (uint) {
+        return bets.totalSupply(option);
+    }
+
+    function _hasOption(bytes32 option) internal view returns (bool) {
+        uint optionCount = _options.length;
+        for(uint8 i = 0; i < optionCount; i++) {
+            if (option == _options[i]) {
+                return true;
+            }
+        }
+        return false;
     }
 }
